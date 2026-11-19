@@ -39,6 +39,10 @@ public:
         GS::UniString excludeFromDownloadPattern;
         GS::UniString includePattern;
         GS::UniString excludePattern;
+        // Optional: the folder of a uv project (pyproject.toml), relative to relativeLoc (only the files below it
+        // are downloaded), "." for relativeLoc itself; a path ending in pyproject.toml works too. When set, the .py scripts run in that project
+        // (uv run --project) instead of as standalone scripts with inline metadata (uv run --script).
+        GS::UniString uvProject;
 
         GS::ObjectState ToOS () const;
         static Repository FromOS (const GS::ObjectState& os);
@@ -65,6 +69,8 @@ public:
         GS::UniString path;
         GS::UniString includePattern;
         GS::UniString excludePattern;
+        // Optional: as Repository::uvProject, relative to the folder.
+        GS::UniString uvProject;
 
         GS::ObjectState ToOS () const;
         static LocalFolder FromOS (const GS::ObjectState& os);
@@ -78,6 +84,9 @@ public:
     bool AskUpdatingAddOnBeforeEachExecution () const { return askUpdatingAddOnBeforeEachExecution; }
     const GS::UniString& uvLocation() const { return uvLocationStr; }
     const GS::UniString& pythonLocation () const { return pythonLocationStr; }
+    // Optional, for testing: the address the Script Manager reads the marketplace catalogue from instead of the
+    // site-data branch (empty: the default address, see ScriptManager.cpp).
+    const GS::UniString& MarketplaceCatalogueUrl () const { return marketplaceCatalogueUrlStr; }
 
 private:
     Config ();
@@ -96,4 +105,5 @@ private:
     bool askUpdatingAddOnBeforeEachExecution;
     GS::UniString uvLocationStr;
     GS::UniString pythonLocationStr;
+    GS::UniString marketplaceCatalogueUrlStr;
 };

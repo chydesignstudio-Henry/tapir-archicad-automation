@@ -5,9 +5,11 @@ report** or a **feature request**, files each one as a GitHub issue in this
 repository, and replies to the Discord message with the number and link of
 the created issue.
 
-It runs as a scheduled GitHub Actions workflow
+It runs as a GitHub Actions workflow
 ([`.github/workflows/discord_issue_bot.yml`](../../.github/workflows/discord_issue_bot.yml)),
-so no server hosting is needed. Every run:
+so no server hosting is needed. It is scheduled at :13 and :43 of every hour;
+GitHub skips some scheduled runs when it is busy, which delays an issue but loses
+nothing, because each run scans the last day. Every run:
 
 1. Fetches the recent messages (default: last 24 hours) of each configured
    channel over the Discord REST API.
@@ -23,21 +25,78 @@ so no server hosting is needed. Every run:
    containing a summary, the quoted original message and a link back to it.
 4. Adds a ✅ reaction to the Discord message (this is how the bot remembers it
    has already handled a message) and replies to it with the issue number.
-   Messages classified as *not* actionable get a 👀 reaction instead, so
-   later runs skip them rather than paying to classify them again.
+5. Moves its 👀 reaction to the last message it checked. Each channel
+   carries only one 👀: the next run continues with the messages after it,
+   so messages classified as *not* actionable are not classified again.
+   When a message has to wait for the next run (the issue limit was
+   reached, or the duplicate search or filing it failed), the scan of that
+   channel stops there and the next run continues from it. A message the
+   classifier cannot answer for is skipped once the classifier answers for
+   the next one, and listed on the borderline issue below; when the next
+   one fails too, the classifier is down and the scan stops there as well.
    Actionable-looking messages that fall just short of the confidence
-   threshold also get the 👀 reaction, but are recorded on a rolling
+   threshold count as checked too, but are recorded on a rolling
    **Borderline Discord reports** issue (and in the workflow run's
    summary) so a maintainer can file them by hand if the classifier was
    too cautious. Closing that issue archives it; the bot opens a fresh
    one when needed. Only calls with confidence 0.5 or higher are
-   recorded there — an actionable call below 0.5 leaves just a log line
-   before the 👀 mark.
+   recorded there — an actionable call below 0.5 leaves just a log line.
 
-Duplicates are prevented twice over: a message carrying the bot's own ✅ or
-👀 reaction is skipped, and before creating an issue the bot searches
+Consecutive messages of one author are read together as one report: they
+are classified together, filed as one issue quoting all of them, and the
+reply and ✅ go to the first of them. The newest such run is left for the
+next scan while its last message is less than 10 minutes old, as its
+author may still be typing.
+
+Messages that are not classified at all — shorter than
+`MIN_MESSAGE_LENGTH`, an attachment without text — count as checked too,
+so the 👀 moves past them. Bot and system messages are not classified and
+do not carry the 👀. The run log lists, for every channel, how many
+messages follow the 👀, and for each of them what happened, including why
+one was skipped or left for the next run.
+
+## The share channel
+
+A channel named `share-a-script` (or listed in `DISCORD_SHARE_CHANNEL_IDS`,
+which is also scanned) is for sharing scripts, not for reports. Nothing there
+is classified. A message with a `.py` attachment (up to four files, together
+under 48,000 characters) or a fenced code block of five lines or more:
+
+1. becomes a GitHub issue labelled `script-share` and `discord` holding the
+   author's words, quoted, and every file exactly as sent, in a code block
+   with the Discord jump link and the usual `discord-message-id` marker;
+2. gets a reply with the issue link, saying the script will be adapted and
+   that the author is asked to confirm it, and that shared scripts are
+   published under the MIT licence unless the author says otherwise;
+3. is then prepared by the issue bot, which turns the issue into one pull
+   request adding `marketplace/<slug>/` (see `CLAUDE.md`, "Script
+   marketplace").
+
+Every other message in the channel is chat and is only checked off. A file that
+is too large, not UTF-8 text, or not `.py` is not shared; a download that fails
+stops the scan of the channel at that message, which the next run reads
+again with a fresh attachment link (a script that keeps failing holds the
+channel only until it is older than `LOOKBACK_MINUTES`). The bot creates the `script-share` label if the
+repository does not have it, because an issue created with a missing label
+loses it silently and would never be prepared.
+
+Attachments are fetched only from Discord's CDN (`cdn.discordapp.com`,
+`media.discordapp.net`), without the bot token, and are never run. A marker
+line inside a shared script is broken with a zero-width space so that it
+cannot make the duplicate check skip another report; the script is otherwise
+unchanged. The channel is found by its name; set `SHARE_CHANNEL_NAME` if it
+is called something else, or `DISCORD_SHARE_CHANNEL_IDS` (a repository
+variable) to name it by ID.
+
+Duplicates are prevented twice over: a message carrying the bot's own ✅
+reaction is skipped, and before creating an issue the bot searches
 existing issues for the Discord message ID (which is embedded in every
 issue body).
+
+Earlier versions put a 👀 on every message classified as not actionable.
+Run the workflow by hand with **cleanup seen marks** checked to remove
+those from each channel's whole history, keeping only the newest one as the
+checkpoint; regular runs also remove them from the messages they scan.
 
 Only regular channel messages are scanned — threads and forum posts are
 not read, so reports posted there will not become issues. Screenshots
@@ -61,6 +120,13 @@ draft pull request, as for any issue a person opens. If a dispatch fails,
 a comment on the issue or the `claude-fix` label still starts it. To start
 it for issues filed earlier, run the workflow by hand with *dry run*
 checked and their numbers in *triage issues*.
+
+## Starting a scan from Discord
+
+`/triage` in the Discord server starts this workflow at once (options `dry_run`
+and `lookback_minutes`), for the people allowed to use it, which helps when
+GitHub drops scheduled runs. It is a separate small Worker, not part of this
+workflow: see [triage-command/](triage-command/README.md).
 
 ## One-time setup
 
@@ -124,12 +190,15 @@ important ones and the rest fall back to defaults:
 | Variable             | Default         | Meaning                                          |
 | -------------------- | --------------- | ------------------------------------------------ |
 | `CLAUDE_MODEL`       | (CLI default)   | model used to classify messages; defaults to the Claude Code CLI's own default model |
-| `LOOKBACK_MINUTES`   | `1440`          | how far back each run scans; the wide overlap is nearly free because marked messages are skipped without a model call |
+| `LOOKBACK_MINUTES`   | `1440`          | how far back each run scans; the wide overlap is nearly free because messages up to the 👀 checkpoint are skipped without a model call |
 | `MAX_ISSUES_PER_RUN` | `5`             | safety cap on issues created per run             |
 | `MAX_ISSUES_PER_DAY` | `20`            | backstop across runs: when this many `discord`-labelled issues were created in the last 24 h, a run creates none (`0` disables) |
 | `MIN_CONFIDENCE`     | `0.7`           | classifier confidence required to file an issue  |
 | `MIN_MESSAGE_LENGTH` | `25`            | messages shorter than this are never considered  |
 | `DRY_RUN`            | `false`         | classify and log only, no issues/replies         |
+| `DISCORD_SHARE_CHANNEL_IDS` | (none)   | comma-separated IDs of share channels, scanned in addition to `DISCORD_CHANNEL_IDS` (see The share channel) |
+| `SHARE_CHANNEL_NAME` | `share-a-script` | name of the channel whose messages are scripts to share |
+| `CLEANUP_SEEN_MARKS` | `false`         | only remove the bot's 👀 from every message except the newest per channel, then exit |
 
 Running it locally works too:
 

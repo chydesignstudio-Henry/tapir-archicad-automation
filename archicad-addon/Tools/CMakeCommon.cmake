@@ -132,10 +132,22 @@ function (GenerateAddOnProject target acVersion devKitDir addOnName addOnSources
 
     get_filename_component (AddOnSourcesFolderAbsolute "${CMAKE_CURRENT_LIST_DIR}/${addOnSourcesFolder}" ABSOLUTE)
     get_filename_component (AddOnResourcesFolderAbsolute "${CMAKE_CURRENT_LIST_DIR}/${addOnResourcesFolder}" ABSOLUTE)
+
+    # The add-on's version (ADDON_VERSION), for the Windows VERSIONINFO that
+    # CompileResources.py writes and the macOS CFBundleShortVersionString. The
+    # Tapir Installer shows the installed version from them.
+    set (AddOnVersionFile "${AddOnSourcesFolderAbsolute}/AddOnVersion.hpp")
+    set_property (DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${AddOnVersionFile}")
+    file (STRINGS "${AddOnVersionFile}" addOnVersionLine REGEX "^#define ADDON_VERSION ")
+    string (REGEX REPLACE "^#define ADDON_VERSION \"([0-9]+\\.[0-9]+\\.[0-9]+)\".*$" "\\1" addOnVersion "${addOnVersionLine}")
+    if (NOT addOnVersion MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+        message (FATAL_ERROR "ADDON_VERSION \"MAJOR.MINOR.PATCH\" was not found in ${AddOnVersionFile}")
+    endif ()
+
     if (WIN32)
         add_custom_command (
             OUTPUT ${ResourceStampFile}
-            DEPENDS ${AddOnResourceFiles} ${AddOnImageFiles} ${AddOnSchemaFiles}
+            DEPENDS ${AddOnResourceFiles} ${AddOnImageFiles} ${AddOnSchemaFiles} ${AddOnVersionFile}
             COMMENT "Compiling resources..."
             COMMAND ${CMAKE_COMMAND} -E make_directory "${ResourceObjectsDir}"
             COMMAND ${Python_EXECUTABLE} "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/CompileResources.py" "${addOnLanguage}" "${acVersion}" "${devKitDir}" "${AddOnSourcesFolderAbsolute}" "${AddOnResourcesFolderAbsolute}" "${ResourceObjectsDir}" "${ResourceObjectsDir}/${addOnName}.res"
@@ -182,6 +194,20 @@ function (GenerateAddOnProject target acVersion devKitDir addOnName addOnSources
     endif ()
 
     set_target_properties (${target} PROPERTIES OUTPUT_NAME ${addOnName})
+    # The git commit the add-on is built from (ADDON_BUILD_COMMIT), shown in the About dialog so
+    # a pull request's build can be told from a release. Read on every build, not only when the
+    # project is generated, so a rebuild never shows an older commit.
+    find_package (Git QUIET)
+    set (AddOnBuildCommitDir "${CMAKE_BINARY_DIR}/BuildCommit")
+    add_custom_target (${target}BuildCommit
+        COMMAND ${CMAKE_COMMAND} "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}" "-DSOURCE_DIR=${AddOnSourcesFolderAbsolute}" "-DOUTPUT_FILE=${AddOnBuildCommitDir}/AddOnBuildCommit.hpp" -P "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/WriteAddOnBuildCommit.cmake"
+        BYPRODUCTS "${AddOnBuildCommitDir}/AddOnBuildCommit.hpp"
+        COMMENT "Reading the build commit..."
+        VERBATIM
+    )
+    add_dependencies (${target} ${target}BuildCommit)
+    target_include_directories (${target} PRIVATE "${AddOnBuildCommitDir}")
+
     if (WIN32)
         set_target_properties (${target} PROPERTIES SUFFIX ".apx")
         set_target_properties (${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY_$<CONFIG> "${CMAKE_BINARY_DIR}/$<CONFIG>")
@@ -202,7 +228,7 @@ function (GenerateAddOnProject target acVersion devKitDir addOnName addOnSources
         set(MACOSX_BUNDLE_GUI_IDENTIFIER com.enzyme.${addOnNameIdentifier})
         set(MACOSX_BUNDLE_LONG_VERSION_STRING ${copyright})
         set(MACOSX_BUNDLE_BUNDLE_NAME ${addOnName})
-        set(MACOSX_BUNDLE_SHORT_VERSION_STRING ${acVersion}.0.0.${gsBuildNum})
+        set(MACOSX_BUNDLE_SHORT_VERSION_STRING ${addOnVersion})
         set(MACOSX_BUNDLE_BUNDLE_VERSION ${acVersion}.0.0.${gsBuildNum})
         set(MACOSX_BUNDLE_COPYRIGHT ${copyright})
         set(MINIMUM_SYSTEM_VERSION "${lsMinimumSystemVersion}")
